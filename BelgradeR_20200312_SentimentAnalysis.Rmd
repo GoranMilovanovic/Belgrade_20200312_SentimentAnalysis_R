@@ -1,0 +1,638 @@
+---
+title: Belgrade R 2020/03/18 Sentiment Analysis in R
+author:
+- name: Goran S. Milovanović
+  affiliation: DataKolektiv, Owner, Wikimedia Deutschland, Data Scientist for Wikidata
+date: "`r format(Sys.time(), '%d %B %Y')`"
+abstract: 
+output:
+  html_notebook:
+    code_folding: show
+    theme: spacelab
+    toc: yes
+    toc_float: yes
+    toc_depth: 5
+  html_document:
+    toc: yes
+    toc_depth: 5
+---
+
+![](_img/DK_Logo_100.png)
+
+***
+### Notebook 01: Belgrade R 2020/03/18 Sentiment Analysis in R
+**Feedback** should be send to `goran.s.milovanovic@gmail.com`. 
+These notebook accompanies the BelgradeR Meetup 2020/03/18, Startit Center, Savska 5, Belgrade.
+Github repo: [GoranMilovanovic/Belgrade_20200312_SentimentAnalysis_R](https://github.com/GoranMilovanovic/Belgrade_20200312_SentimentAnalysis_R)
+
+***
+
+### 0. Setup
+
+**Note.** The following chunk just defines the project directory tree.
+
+```{r echo = T, message = F}
+### --- directory tree
+dataDir <- paste0(getwd(), '/_data/')
+analyticsDir <- paste0(getwd(), '/_analytics/')
+imgDir <- paste0(getwd(), '/_img/')
+directoryTree <- c('dataDir', 'analyticsDir', 'imgDir', 'directoryTree')
+```
+
+### 1. Data Acquisition w. {newsrivr}
+
+Our first task is to collect the news in English where Apple, Samsung, or Huawei are mentioned. Web-scraping can be a dounting task in itself, not to mention the problem of how to identify relevant news *before* having any model of the relevant semantic domain that we could use to filter out irrelevant documents. Many approaches (e.g. filtering by keywords, relying on domain ontologies, dictionaries, etc) can be helpful in that respect, however, we will go for something rather simple here, focusing on a news API to fetch data and accepting any result that matches a set of simple search terms. 
+
+The [{newsrivr}](https://github.com/MikeJohnPage/newsrivr/) package is an R wrapper to the [Newsriver API](https://newsriver.io/). 
+**Please be gentle:**
+
+> Newsriver is a non profit free of charge news API. The API rate limit is 225 calls per window per API token. The rate limiting window is 15 minutes long. We reserve the right to restrict the API usage or entirelly block the access in case of abuses or unfair usage. If used for commercial purposes, please consider contributing to our infrastructure costs with a monthly subscription. For more information please contact us at support@newsriver.io [source: https://newsriver.io/]
+
+In the following chunk we will use `newsrivr::get_news()` to grab the news in English language (see the `language = "en"` parameter) from `2020/01/01` to `2020/02/21`. I have stored my Newsriver API credentials in `creds.txt` (not shared in this repo) and decided to identify myself to the API by my email address (see `userAgent <- 'goran.s.milovanovic@gmail.com'`, and then the `ua = userAgent` parameter to `newsrivr::get_news()`).
+
+`HuaweiSet <- clean_news(HuaweiSet)` performs some basic (and very useful indeed) clean-up of the collected documents w. `newsrivr::clean_news`.
+
+```{r echo = T, message = F, eval = F}
+### --- packages
+library(newsrivr)
+### --- {newsriver} to hear the news
+# - identify yourself to NEWSRIVER
+creds <- readLines('creds.txt')
+userAgent <- 'goran.s.milovanovic@gmail.com'
+# - collect all news on Huawei, Apple, Samsung 
+# - From: 2020/01/01; To: 2020/02/29
+# - search term: 'Huawei'
+HuaweiSet <- get_news("Huawei",
+                      from = "2020-01-01",
+                      to = "2020-02-21",
+                      limit = 100,
+                      language = "en",
+                      api_token = creds,
+                      ua = userAgent)
+HuaweiSet <- clean_news(HuaweiSet)
+write.csv(HuaweiSet, paste0(dataDir, "HuaweiSet.csv"))
+```
+
+Now we repeat the process for the following two search terms: `Apple`, `Samsung`.
+
+```{r echo = T, message = F, eval = F}
+# - search term: 'Apple'
+AppleSet <- get_news("Apple",
+                     from = "2020-01-01",
+                     to = "2020-02-21",
+                     limit = 100,
+                     language = "en",
+                     api_token = creds,
+                     ua = userAgent)
+AppleSet <- clean_news(AppleSet)
+write.csv(AppleSet, paste0(dataDir, "AppleSet.csv"))
+# - search term: 'Samsung'
+SamsungSet <- get_news("Samsung",
+                       from = "2020-01-01",
+                       to = "2020-02-21",
+                       limit = 100,
+                       language = "en",
+                       api_token = creds,
+                       ua = userAgent)
+SamsungSet <- newsrivr::clean_news(SamsungSet)
+write.csv(SamsungSet, paste0(dataDir, "SamsungSet.csv"))
+```
+
+Clean up a bit, but keep everything in `directoryTree`:
+
+```{r echo = T, message = F, eval = T}
+# - remove everything except what is under directoryTree
+rm(list = setdiff(ls(), directoryTree)); gc()
+ls()
+```
+
+Now we have the data and our next step is to pre-process so to prepare our data structures for sentiment analysis. I will be taking a [{tidytext}](https://www.tidytextmining.com/) approach in what follows.
+
+### 2. Text pre-processing w. {tidytext} and {dplyr}
+
+```{r echo = T, message = F}
+# - packages
+library(tidyverse)
+library(tidytext)
+library(data.table)
+library(scales)
+
+# - load data sets
+HuaweiSet <- fread(paste0(dataDir, 'HuaweiSet.csv'), header = T)
+HuaweiSet$V1 <- NULL
+```
+
+I have loaded `{data.table}` beacuse I will need to make use of its nice `data.table::rbindlist()` function later. However, with `{data.table}` already at hand, why use base `read.csv()` or even `readr::read_csv()` when `data.table::fread()` is available? It will automatically generate and autoname the `V1` column of row numbers; we don't need it, hence `HuaweiSet$V1 <- NULL`. Loading `AppleSet` and `SamsungSet` now:
+
+```{r echo = T, message = F}
+AppleSet <- fread(paste0(dataDir, 'AppleSet.csv'), header = T)
+AppleSet$V1 <- NULL
+SamsungSet <- fread(paste0(dataDir, 'SamsungSet.csv'), header = T)
+SamsungSet$V1 <- NULL
+```
+
+We need to check if any of the documents returned from the search terms `Apple`, `Samsung`, and `Huawei` are identical:
+
+```{r echo = T, message = F}
+dataSet <- rbindlist(list(AppleSet, HuaweiSet, SamsungSet))
+AppleSet$Apple <- T
+HuaweiSet$Huawei <- T
+SamsungSet$Samsung <- T
+AppleSet <- select(AppleSet, title, Apple)
+HuaweiSet <- select(HuaweiSet, title, Huawei)
+SamsungSet <- select(SamsungSet, title, Samsung)
+dataSet <- dataSet %>% 
+  left_join(AppleSet, by = 'title')
+dataSet <- dataSet %>% 
+  left_join(HuaweiSet, by = 'title')
+dataSet <- dataSet %>% 
+  left_join(SamsungSet, by = 'title')
+rm(AppleSet, SamsungSet, HuaweiSet)
+dataSet$Apple <- ifelse(is.na(dataSet$Apple), F, T)
+dataSet$Samsung <- ifelse(is.na(dataSet$Samsung), F, T)
+dataSet$Huawei <- ifelse(is.na(dataSet$Huawei), F, T)
+dataSet$num_sets <- dataSet$Apple + dataSet$Huawei + dataSet$Samsung 
+wDuplicated <- which(duplicated(dataSet[, c('title', 'discoverDate', 'website.domainName')]))
+length(wDuplicated)
+```
+
+Remove the duplicated documents while keeping information on what search terms were used to obtain them:
+
+```{r echo = T, message = F}
+dataSet <- dataSet[-wDuplicated, ]
+```
+
+Now all the documents in `dataSet` are unique. Next, for each document, calculate the proportion of samples (i.e. `AppleSet`, `SamsungSet`, `HuaweiSet`) of its origin:
+
+```{r echo = T, message = F}
+dataSet$AppleP <- dataSet$Apple/dataSet$num_sets
+dataSet$HuaweiP <- dataSet$Huawei/dataSet$num_sets
+dataSet$SamsungP <- dataSet$Samsung/dataSet$num_sets
+```
+
+The proportions will be used to ponder sentiment scores later on.
+
+Let's take a look at our data now:
+
+```{r echo = T, message = F}
+str(dataSet)
+```
+
+We have the document title in `title`, date when the document was found by Newsriver in `discoverDate`, where it was found in `website.domainName` (with some missing data there), and finally full text in `text`:
+
+```{r echo = T, message = F}
+paste0(substr(dataSet$text[1], 1, 1000), " [...]")
+```
+
+Now, we cannot process the text sentiment in the way texts are represented now (or at least on on this occasion; a true AI wouldn't care as well as your natural human cognitive system doesn't). To illustrate: in order to study the sentiment of the text we will rely on one dictionary - better say one sentiment lexicon - present in the [{textdata}](https://cran.r-project.org/web/packages/textdata/index.html) package, and dictionaries containt *words* - so we need to be able to represent natural texts as pure lists or vectors of words in order to be able to match against the dictionary!
+What happens next is **tokenization**: the step in text pre-processing were we change the representation of the document from its usual, typical form into an array of **tokens** that are suitable for analysis. What constitutes a token can vary across many approaches to text analytics: for example, sometimes we need only words extracted, while sometimes we need to look for phrases, or even more complicated syntactic constituents. Since the sentiment lexicon that we will use is based on single words, we will use `tidytext::unnest_tokens` in the simplest possible way to represent documents as arrays of words in a data.frame.
+
+We start by re-creating the `HuaweiSet` data.frame from the collection of unique documents in `dataSet`:
+
+```{r echo = T, message = F}
+# - re-create HuaweiSet
+HuaweiSet <- dataSet %>% 
+  select(title, text, discoverDate, 
+         website.domainName, Huawei, HuaweiP) %>% 
+  filter(Huawei) %>% 
+  select(-Huawei)
+# - unnest texts
+HuaweiSet <- HuaweiSet %>%
+  unnest_tokens(word, text)
+```
+
+Let's have a look at the way `HuaweiSet` is represented now:
+
+```{r echo = T, message = F}
+str(HuaweiSet)
+```
+
+The `text` column is gone, replaced by a new column: `word` (omitting document title from this preview):
+
+```{r echo = T, message = F}
+head(HuaweiSet %>% select(discoverDate, website.domainName, word), 30)
+```
+
+Let's do the same for `AppleSet` and `SamsungSet`:
+
+```{r echo = T, message = F}
+# - re-create AppleSet
+AppleSet <- dataSet %>% 
+  select(title, text, discoverDate, 
+         website.domainName, Apple, AppleP) %>% 
+  filter(Apple) %>% 
+  select(-Apple)
+AppleSet <- AppleSet %>%
+  unnest_tokens(word, text)
+
+# - re-create AppleSet
+SamsungSet <- dataSet %>% 
+  select(title, text, discoverDate, 
+         website.domainName, Samsung, SamsungP) %>% 
+  filter(Samsung) %>% 
+  select(-Samsung)
+SamsungSet <- SamsungSet %>%
+  unnest_tokens(word, text)
+```
+
+One additional step before sentiment analysis: calculating word frequency per document. **N.B.** I will use `dplyr::group_by` across `title`, `discoverDate`, `website.domainName`, `SamsungP`, and `word` in order to `summarise` counts with `dplyr::n()`; **however**, it will work on this occasion only because we know that any combination of `title`, `discoverDate`, `website.domainName`, and `SamsungP` in our data set - or `AppleP`, or `HuaweiP` in the respective data sets - **must be unique** (in other words: only one document with a particular title, on a particular day, from the particular website, and with a particular proportion, was discovered).
+
+```{r echo = T, message = F}
+# - summarise token frequencies with {dplyr}
+HuaweiSet <- HuaweiSet %>% 
+  group_by(title, discoverDate, website.domainName, HuaweiP, word) %>% 
+  summarise(frequency = n()) %>% 
+  arrange(title, desc(frequency))
+AppleSet <- AppleSet %>% 
+  group_by(title, discoverDate, website.domainName, AppleP, word) %>% 
+  summarise(frequency = n()) %>% 
+  arrange(title, desc(frequency))
+SamsungSet <- SamsungSet %>% 
+  group_by(title, discoverDate, website.domainName, SamsungP, word) %>% 
+  summarise(frequency = n()) %>% 
+  arrange(title, desc(frequency))
+```
+
+We will next take a look at the structure of the Bing sentiment lexicon and compute sentiment score for each document.
+
+### 3. Sentiment Analysis w. {tidytext}: Bing dictionary
+
+```{r echo = T, message = F}
+library(textdata)
+# - following: https://www.tidytextmining.com/sentiment.html
+# - Three general-purpose lexicons are:
+## -- AFINN from Finn Årup Nielsen,
+# - The AFINN lexicon assigns words with a score that runs between -5 and 5, 
+# - with negative scores indicating negative sentiment and positive scores indicating positive sentiment.
+## -- bing from Bing Liu and collaborators, and
+# - The bing lexicon categorizes words in a binary fashion into 
+# - positive and negative categories.
+## -- nrc from Saif Mohammad and Peter Turney.
+# - The nrc lexicon categorizes words in a binary fashion (“yes”/“no”) 
+# - into categories of positive, negative, anger, anticipation, 
+# - disgust, fear, joy, sadness, surprise, and trust.
+## -- NOTE. On the first attempt to perform textdata::get_sentimens() upon
+## -- installation, you will be prompted if you want to download the respective 
+## -- dictionary. Answer: yes.
+bingData <- get_sentiments("bing")
+```
+
+Let's have a look at the structure of `bingData`:
+
+```{r echo = T, message = F, warning = F}
+head(bingData)
+```
+
+Check if there is anything capitalized in the `word` column of the `bindSet` data.frame:
+
+```{r echo = T, message = F, warning = F}
+bingData$capitalized <- 
+  sapply(bingData$word, function(x) {
+    first <- str_sub(x, 1, 1)
+    ifelse(grepl('[[:digit:]]', first), F, 
+           grepl('[[:upper:]]', first))
+  })
+wCap <- which(bingData$capitalized)
+length(wCap)
+```
+
+So nothing in `bingData` is capitalized. Good. We had to perform this check because `to_lower = TRUE` is the `tidytext::unnest_tokens` default.
+
+```{r echo = T, message = F, warning = F}
+bingData$capitalized <- NULL
+```
+
+```{r echo = T, message = F}
+# - Bing data set reference:
+# - This dataset was first published in Minqing Hu and Bing Liu, “Mining and summarizing customer
+# - reviews.”, Proceedings of the ACM SIGKDD International Conference on Knowledge Discovery &
+# - Data Mining (KDD-2004), 2004. [Source: https://cran.r-project.org/web/packages/textdata/textdata.pdf]
+# - score sentiment for HuaweiSet: bingData, by documents
+HuaweiSet <- HuaweiSet %>% 
+  inner_join(bingData, 
+             by = "word")
+HuaweiSet$sentiment <- ifelse(HuaweiSet$sentiment == 'positive', 1, -1)
+HuaweiSet_bing_docs <- HuaweiSet %>% 
+  group_by(title, discoverDate, website.domainName) %>% 
+  summarise(sentimentScore = sum(frequency*sentiment*HuaweiP)) %>% 
+  arrange(desc(sentimentScore))
+```
+
+```{r echo = T, eval = T, warning = 'hide', message = FALSE, fig.height = 4, fig.width = 5}
+# - visualize: sentimentScore distribution
+HuaweiSet_plotFrame <- HuaweiSet_bing_docs %>% 
+  select(sentimentScore) %>% 
+  group_by(sentimentScore) %>% 
+  summarise(count = n()) %>% 
+  arrange(desc(count))
+ggplot(HuaweiSet_plotFrame,
+       aes(x = sentimentScore, y = count)) +
+  geom_bar(stat = 'identity', fill = "darkcyan") + 
+  ggtitle('Huawei dataset') + 
+  xlab('Bing dictionary based sentiment score') + 
+  ylab('No. documents') + 
+  theme_bw()
+```
+
+Now for `Apple` and `Samsung`:
+
+```{r echo = T, message = F}
+# - score sentiment for AppleSet: bingData, by documents
+AppleSet <- AppleSet %>% 
+  inner_join(bingData, 
+             by = "word")
+AppleSet$sentiment <- ifelse(AppleSet$sentiment == 'positive', 1, -1)
+AppleSet_bing_docs <- AppleSet %>% 
+  group_by(title, discoverDate, website.domainName) %>% 
+  summarise(sentimentScore = sum(frequency*sentiment*AppleP)) %>% 
+  arrange(desc(sentimentScore))
+# - visualize: sentimentScore distribution
+AppleSet_plotFrame <- AppleSet_bing_docs %>% 
+  select(sentimentScore) %>% 
+  group_by(sentimentScore) %>% 
+  summarise(count = n()) %>% 
+  arrange(desc(count))
+
+# - score sentiment for SamsungSet: bingData, by documents
+SamsungSet <- SamsungSet %>% 
+  inner_join(bingData, 
+             by = "word")
+SamsungSet$sentiment <- ifelse(SamsungSet$sentiment == 'positive', 1, -1)
+SamsungSet_bing_docs <- SamsungSet %>% 
+  group_by(title, discoverDate, website.domainName) %>% 
+  summarise(sentimentScore = sum(frequency*sentiment*SamsungP)) %>% 
+  arrange(desc(sentimentScore))
+# - visualize: sentimentScore distribution
+SamsungSet_plotFrame <- SamsungSet_bing_docs %>% 
+  select(sentimentScore) %>% 
+  group_by(sentimentScore) %>% 
+  summarise(count = n()) %>% 
+  arrange(desc(count))
+```
+
+Let's compare the sentiment score distributions across the three sets:
+
+```{r echo = T, message = F, fig.height = 15, fig.width = 15}
+HuaweiSet_plotFrame$Set <- 'Huawei'
+AppleSet_plotFrame$Set <- 'Apple'
+SamsungSet_plotFrame$Set <- 'Samsung'
+plotFrame <- rbind(HuaweiSet_plotFrame, 
+                   AppleSet_plotFrame, 
+                   SamsungSet_plotFrame)
+ggplot(plotFrame,
+       aes(x = sentimentScore, 
+           y = count, 
+           fill = Set, 
+           color = Set)) +
+  geom_bar(stat = 'identity') + 
+  xlab('Bing dictionary based sentiment score') + 
+  ylab('No. documents') + 
+  facet_wrap(~Set, ncol = 2) +
+  theme_bw() + 
+  theme(legend.position = "none") + 
+  theme(axis.text.x = element_text(size = 15)) +
+  theme(axis.title.x = element_text(size = 15)) + 
+  theme(axis.text.y = element_text(size = 15)) +
+  theme(axis.title.y = element_text(size = 15)) +
+  theme(strip.text = element_text(size = 15))
+```
+
+Plot the means of `sentimentScore`:
+
+```{r echo = T, message = F, fig.height = 4.5, fig.width = 6}
+AppleSet_bing_docs$Set <- 'Apple'
+HuaweiSet_bing_docs$Set <- 'Huawei'
+SamsungSet_bing_docs$Set <- 'Samsung'
+plotFrame <- rbind(
+  AppleSet_bing_docs,
+  HuaweiSet_bing_docs,
+  SamsungSet_bing_docs)
+plotFrame <- plotFrame[, c('Set', 'sentimentScore')]
+meansPlotFrame <- plotFrame %>%
+  group_by(Set) %>% 
+  summarise(mean = mean(sentimentScore), 
+            se = sd(sentimentScore)/sqrt(n())
+  )
+ggplot(meansPlotFrame, 
+       aes(x = Set, 
+           y = mean, 
+           color = "red")) +
+  geom_errorbar(aes(ymin = mean-se,
+                    ymax = mean+se),
+                width = .1,
+                size = .25) +
+  geom_line(group = 1, size = .25) +
+  geom_point(size = 2) +
+  geom_point(size = 1.5, color = "white") +
+  ylab('Mean Sentiment Score') +
+  xlab('') + 
+  theme_bw() + 
+  theme(legend.position = "None")
+```
+
+
+### 4. Hypothesis testing
+#### 4.1 One-way ANOVA?
+
+First, why not check a possibility for an ordinary one-way ANOVA?
+
+```{r echo = T, message = F}
+# - Levene test for homogeneity of variance
+library(car)
+leveneTest(sentimentScore ~ Set,
+           data = plotFrame)
+
+```
+
+Levene's test for Homogeneity of Variance **is significant**, so we must drop the classic ANOVA approach. Let's check the residuals too.
+
+```{r echo = T, message = F, fig.height = 3.5, fig.width = 9}
+resFrame <- plotFrame %>% 
+  group_by(Set) %>% 
+  mutate(residual = mean(sentimentScore) - sentimentScore)
+ggplot(resFrame, 
+       aes(sample = residual,
+           group = Set)) + 
+  stat_qq(size = .35) +
+  stat_qq_line(color = 'red', size = .25) + 
+  facet_wrap(~Set) + 
+  theme_bw()
+```
+
+Nope. The residuals do not look like if they are distributed normally. Bye bye one-way ANOVA.
+
+#### 4.2 Bayesian A/B Tests
+
+First we go back to our `dataSet` and remove all the documents that were obtained from two or more search terms (`Apple`, `Samsung`, or `Huawei`). The fraction of the sample that we are giving up is small:
+
+```{r echo = T, message = F}
+dim(dataSet)
+dataSet <- filter(dataSet, num_sets == 1)
+dim(dataSet)
+```
+
+Next we will drop all the columns that we do not need for the test and reshape the data.frame:
+
+```{r echo = T, message = F}
+testSet <- dataSet %>% 
+  select(-discoverDate, -website.domainName, -num_sets, 
+         -AppleP, -HuaweiP, -SamsungP)
+set <- c('Apple', 'Huawei', 'Samsung')
+testSet$Set <- apply(testSet[, c('Apple', 'Huawei', 'Samsung')], 1, function(x) {
+  names(which(x))
+})
+testSet <- select(testSet, 
+                  -Apple, -Huawei, -Samsung, - title)
+testSet <- unnest_tokens(testSet, 
+                         word, text)
+```
+
+Now we join the `bingData` to `testSet` to keep only the words from the sentiment lexicon:
+
+```{r echo = T, message = F}
+testSet <- testSet %>% 
+  inner_join(bingData, 
+             by = "word")
+testSet$word <- NULL
+```
+
+Finally, (1) formulate the Beta priors for Bayesian inference for a Binomial Distribution, (2) count positive and negative outcomes in each set ("data"), and (3) perform Bayesian inference:
+
+```{r echo = T, message = F}
+# - Uninformative prior:
+priorAlpha <- 1
+priorBeta <- 1
+# - Data:
+AppleData <- testSet %>% 
+  filter(Set == 'Apple') %>% 
+  group_by(sentiment) %>% 
+  summarise(data = n())
+AppleData <- c(AppleData$data[2], AppleData$data[1])
+HuaweiData <- testSet %>% 
+  filter(Set == 'Huawei') %>% 
+  group_by(sentiment) %>% 
+  summarise(data = n())
+HuaweiData <- c(HuaweiData$data[2], HuaweiData$data[1])
+SamsungData <- testSet %>% 
+  filter(Set == 'Samsung') %>% 
+  group_by(sentiment) %>% 
+  summarise(data = n())
+SamsungData <- c(SamsungData$data[2], SamsungData$data[1])
+# - Posteriors:
+posteriorAlpha_Apple <- priorAlpha + AppleData[1]
+posteriorBeta_Apple <- priorBeta + sum(AppleData) - AppleData[1]
+posteriorAlpha_Huawei <- priorAlpha + HuaweiData[1]
+posteriorBeta_Huawei <- priorBeta + sum(HuaweiData) - HuaweiData[1]
+posteriorAlpha_Samsung <- priorAlpha + SamsungData[1]
+posteriorBeta_Samsung <- priorBeta + sum(SamsungData) - SamsungData[1]
+```
+
+Sample from the posterior and perform the `Apple > Huawei` test:
+
+```{r echo = T, message = F}
+# - Number of Monte Carlo samples:
+mcN <- 1e6
+# - Bayesian A/B
+Apple_Samples <- rbeta(mcN, posteriorAlpha_Apple, posteriorBeta_Apple)
+Huawei_Samples <- rbeta(mcN, posteriorAlpha_Huawei, posteriorBeta_Huawei)
+t_percentDiff <- (mean(Apple_Samples) - mean(Huawei_Samples))/mean(Huawei_Samples)*100
+p_Apple_Huawei <- mean((Apple_Samples > Huawei_Samples))
+# - Probability of Apple better than Huawei:
+print(paste('The probability of Apple set having more positive sentiment than Huawei is: ', p_Apple_Huawei))
+```
+
+```{r echo = T, message = F}
+# - Plot
+percentDiff <- (Apple_Samples - Huawei_Samples)/Huawei_Samples*100
+percentDiff <- data.frame(percentDiff = percentDiff,
+                          area = ifelse(percentDiff <= 0, '<= 0', '> 0'),
+                          stringsAsFactors = T)
+ggplot(percentDiff, aes(x = percentDiff,
+                        fill = area)) + 
+  geom_histogram(binwidth = .1, alpha = .5) + 
+  scale_y_continuous(labels = comma) +
+  xlab('(Apple - Huawei)/Huawei') + ylab('Density') + 
+  ggtitle('Apple/Huawei Lift') +
+  theme_minimal() + 
+  theme(plot.title = element_text(size = 10))
+```
+
+Sample from the posterior and perform the `Samsung > Huawei` test:
+
+```{r echo = T, message = F}
+# - Number of Monte Carlo samples:
+mcN <- 1e6
+# - Bayesian A/B
+Samsung_Samples <- rbeta(mcN, posteriorAlpha_Samsung, posteriorBeta_Samsung)
+Huawei_Samples <- rbeta(mcN, posteriorAlpha_Huawei, posteriorBeta_Huawei)
+t_percentDiff <- (mean(Samsung_Samples) - mean(Huawei_Samples))/mean(Huawei_Samples)*100
+p_Samsung_Huawei <- mean((Samsung_Samples > Huawei_Samples))
+# - Probability of Samsung more positive than Huawei:
+print(paste('The probability of Samsung set having more positive sentiment than Huawei is: ', p_Samsung_Huawei))
+```
+
+```{r echo = T, message = F}
+# - Plot
+percentDiff <- (Samsung_Samples - Huawei_Samples)/Huawei_Samples*100
+percentDiff <- data.frame(percentDiff = percentDiff,
+                          area = ifelse(percentDiff <= 0, '<= 0', '> 0'),
+                          stringsAsFactors = T)
+ggplot(percentDiff, aes(x = percentDiff,
+                        fill = area)) + 
+  geom_histogram(binwidth = .1, alpha = .5) + 
+  scale_y_continuous(labels = comma) +
+  xlab('(Samsung - Huawei)/Huawei') + ylab('Density') + 
+  ggtitle('Samsung/Huawei Lift') +
+  theme_minimal() + 
+  theme(plot.title = element_text(size = 10))
+```
+
+Sample from the posterior and perform the `Apple > Samsung` test:
+
+```{r echo = T, message = F}
+# - Number of Monte Carlo samples:
+mcN <- 1e6
+# - Bayesian A/B
+Apple_Samples <- rbeta(mcN, posteriorAlpha_Apple, posteriorBeta_Apple)
+Samsung_Samples <- rbeta(mcN, posteriorAlpha_Samsung, posteriorBeta_Samsung)
+t_percentDiff <- (mean(Apple_Samples) - mean(Samsung_Samples))/mean(Samsung_Samples)*100
+p_Apple_Samsung <- mean((Apple_Samples > Samsung_Samples))
+# - Probability of Apple better than Samsung:
+print(paste('The probability of Apple set having more positive sentiment than Samsung is: ', p_Apple_Samsung))
+```
+
+```{r echo = T, message = F}
+# - Plot
+percentDiff <- (Apple_Samples - Samsung_Samples)/Samsung_Samples*100
+percentDiff <- data.frame(percentDiff = percentDiff,
+                          area = ifelse(percentDiff <= 0, '<= 0', '> 0'),
+                          stringsAsFactors = T)
+ggplot(percentDiff, aes(x = percentDiff,
+                        fill = area)) + 
+  geom_histogram(binwidth = .1, alpha = .5) + 
+  scale_y_continuous(labels = comma) +
+  xlab('(Apple - Samsung)/Samsung') + ylab('Density') + 
+  ggtitle('Apple/Samsung Lift') +
+  theme_minimal() + 
+  theme(plot.title = element_text(size = 10))
+```
+
+
+***
+Goran S. Milovanović
+
+DataKolektiv, 2019.
+
+contact: datakolektiv@datakolektiv.com
+
+![](_img/DK_Logo_100.png)
+
+***
+License: [GPLv3](http://www.gnu.org/licenses/gpl-3.0.txt)
+This Notebook is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+This Notebook is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for more details.
+You should have received a copy of the GNU General Public License along with this Notebook. If not, see <http://www.gnu.org/licenses/>.
+
+***
+
+
