@@ -535,7 +535,6 @@ mcN <- 1e6
 # - Bayesian A/B
 Apple_Samples <- rbeta(mcN, posteriorAlpha_Apple, posteriorBeta_Apple)
 Huawei_Samples <- rbeta(mcN, posteriorAlpha_Huawei, posteriorBeta_Huawei)
-t_percentDiff <- (mean(Apple_Samples) - mean(Huawei_Samples))/mean(Huawei_Samples)*100
 p_Apple_Huawei <- mean((Apple_Samples > Huawei_Samples))
 # - Probability of Apple better than Huawei:
 print(paste('The probability of Apple set having more positive sentiment than Huawei is: ', p_Apple_Huawei))
@@ -565,7 +564,6 @@ mcN <- 1e6
 # - Bayesian A/B
 Samsung_Samples <- rbeta(mcN, posteriorAlpha_Samsung, posteriorBeta_Samsung)
 Huawei_Samples <- rbeta(mcN, posteriorAlpha_Huawei, posteriorBeta_Huawei)
-t_percentDiff <- (mean(Samsung_Samples) - mean(Huawei_Samples))/mean(Huawei_Samples)*100
 p_Samsung_Huawei <- mean((Samsung_Samples > Huawei_Samples))
 # - Probability of Samsung more positive than Huawei:
 print(paste('The probability of Samsung set having more positive sentiment than Huawei is: ', p_Samsung_Huawei))
@@ -595,7 +593,6 @@ mcN <- 1e6
 # - Bayesian A/B
 Apple_Samples <- rbeta(mcN, posteriorAlpha_Apple, posteriorBeta_Apple)
 Samsung_Samples <- rbeta(mcN, posteriorAlpha_Samsung, posteriorBeta_Samsung)
-t_percentDiff <- (mean(Apple_Samples) - mean(Samsung_Samples))/mean(Samsung_Samples)*100
 p_Apple_Samsung <- mean((Apple_Samples > Samsung_Samples))
 # - Probability of Apple better than Samsung:
 print(paste('The probability of Apple set having more positive sentiment than Samsung is: ', p_Apple_Samsung))
